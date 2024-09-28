@@ -3,9 +3,9 @@ current_model = '_DIEFEN'
 
 current = current_dataset + current_model
 
-patch_size = 5
-lr = 5e-3
-bs_number = 32
+patch_size = 3
+lr = 1e-3
+bs_number = 64
 epoch_number = 1
 
 phase = ['train', 'test', 'no_gt']

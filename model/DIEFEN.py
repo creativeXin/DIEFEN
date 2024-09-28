@@ -43,7 +43,6 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-# LKA
 class AttentionModule(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -290,13 +289,6 @@ class SelfAttention(nn.Module):
         return out
 
 class SpatialExchange(nn.Module):
-    """
-    spatial exchange
-    Args:
-        p (float, optional): p of the features will be exchanged.
-            Defaults to 1/2.
-    """
-
     def __init__(self, p=1 / 2):
         super().__init__()
         assert p >= 0 and p <= 1
@@ -322,7 +314,6 @@ class DIEFEN(nn.Module):
         self.num_classes = num_classes
         self.depths = depths
         self.num_stages = num_stages
-        # 返回一个一维的tensor（张量），这个张量包含了从start到end（包括端点）的等距的steps个数据点
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate,
                                                 sum(depths))]  # stochastic depth decay rule
         cur = 0
@@ -338,10 +329,8 @@ class DIEFEN(nn.Module):
             block = nn.ModuleList([Block(
                 dim=embed_dims[i], mlp_ratio=mlp_ratios[i], drop=drop_rate, drop_path=dpr[cur + j])
                 for j in range(depths[i])])
-            # LayerNorm也是归一化的一种方法
             norm = norm_layer(embed_dims[i])
             cur += depths[i]
-            # setattr() 函数对应函数 getattr()，用于设置属性值，该属性不一定是存在的。
             setattr(self, f"patch_embed{i + 1}", patch_embed)
             setattr(self, f"block{i + 1}", block)
             setattr(self, f"norm{i + 1}", norm)
@@ -477,8 +466,7 @@ class DIEFEN(nn.Module):
         a42 = features2[3].squeeze()
 
         sum_features = torch.cat((a1,a2,a3,a4,a10,a20,a30,a40,a11,a12,a21,a22,a31,a32,a41,a42), dim=1)
-
-        # 处理总结特征并获得最终输出
+        
         deep_out = self.fc(sum_features)
 
         final_out = self.softmax(deep_out)

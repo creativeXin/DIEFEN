@@ -1,15 +1,19 @@
+import math
 
 import torch
 import torch.nn as nn
 
 import torch.nn.functional as F
+from einops import rearrange, repeat
 from functools import partial
 
-from timm.models.layers import DropPath, to_2tuple
+from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+from timm.models.registry import register_model
+from timm.models.vision_transformer import _cfg
 from einops.layers.torch import Rearrange, Reduce
 
+device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
 
-# DWConv
 class DWConv(nn.Module):
     def __init__(self, dim=768):
         super(DWConv, self).__init__()
@@ -19,7 +23,6 @@ class DWConv(nn.Module):
         x = self.dwconv(x)
         return x
 
-# mlp
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.1):
         super().__init__()
@@ -44,12 +47,9 @@ class Mlp(nn.Module):
 class AttentionModule(nn.Module):
     def __init__(self, dim):
         super().__init__()
-        # 深度卷积
         self.conv0 = nn.Conv2d(dim, dim, 5, padding=2, groups=dim)
-        # 深度空洞卷积
         self.conv_spatial = nn.Conv2d(
             dim, dim, 7, stride=1, padding=9, groups=dim, dilation=3)
-        # 逐点卷积
         self.conv1 = nn.Conv2d(dim, dim, 1)
 
     def forward(self, x):
@@ -57,21 +57,15 @@ class AttentionModule(nn.Module):
         attn = self.conv0(x)
         attn = self.conv_spatial(attn)
         attn = self.conv1(attn)
-
-        # 注意力操作
         return u * attn
 
 # attention
 class SpatialAttention(nn.Module):
     def __init__(self, d_model):
         super().__init__()
-        # 1*1
         self.proj_1 = nn.Conv2d(d_model, d_model, 1)
-        # 激活函数
         self.activation = nn.GELU()
-        # LKA
         self.spatial_gating_unit = AttentionModule(d_model)
-        # 1*1
         self.proj_2 = nn.Conv2d(d_model, d_model, 1)
 
     def forward(self, x):
@@ -115,6 +109,8 @@ class Block(nn.Module):
         return x
 
 class OverlapPatchEmbed(nn.Module):
+    """ Image to Patch Embedding """
+
     def __init__(self, img_size=(307, 241), patch_size=7, stride=4, in_chans=155, embed_dim=768):
         super().__init__()
         patch_size = to_2tuple(patch_size)
@@ -162,8 +158,8 @@ class ConvNet(nn.Module):
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.fc1 = nn.Linear(64 * 112 * 35, 128) 
-        self.fc2 = nn.Linear(128, 2) 
+        self.fc1 = nn.Linear(64 * 112 * 35, 128)  # Adjust the dimensions
+        self.fc2 = nn.Linear(128, 2)  # Adjust the dimensions based on your needs
 
     def forward(self, x):
         x = self.conv1(x)
@@ -172,7 +168,7 @@ class ConvNet(nn.Module):
         x = self.conv2(x)
         x = F.relu(x)
         x = self.pool(x)
-        x = x.view(-1, 64 * 112 * 35)
+        x = x.view(-1, 64 * 112 * 35)  # Flatten before FC layers
         x = self.fc1(x)
         x = F.relu(x)
         x = self.fc2(x)
@@ -262,6 +258,7 @@ class MultiHeadAttention(nn.Module):
         Q = self.wq(query).view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         K = self.wk(key).view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         V = self.wv(value).view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # print(torch.matmul(Q, K.permute(0, 1, 3, 2)))
         energy = torch.matmul(Q, K.permute(0, 1, 3, 2)) / self.scale
 
         if mask is not None:
@@ -287,14 +284,19 @@ class SelfAttention(nn.Module):
         keys = self.keys(k)
         queries = self.queries(q)
         values = self.values(k)
-
         attention = torch.matmul(queries, keys.transpose(-2, -1)) / self.embed_size ** 0.5
         attention = F.softmax(attention, dim=-1)
-
         out = torch.matmul(attention, values)
         return out
 
 class SpatialExchange(nn.Module):
+    """
+    spatial exchange
+    Args:
+        p (float, optional): p of the features will be exchanged.
+            Defaults to 1/2.
+    """
+
     def __init__(self, p=1 / 2):
         super().__init__()
         assert p >= 0 and p <= 1
@@ -320,8 +322,9 @@ class DIEFEN(nn.Module):
         self.num_classes = num_classes
         self.depths = depths
         self.num_stages = num_stages
+        # 返回一个一维的tensor（张量），这个张量包含了从start到end（包括端点）的等距的steps个数据点
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate,
-                                                sum(depths))]
+                                                sum(depths))]  # stochastic depth decay rule
         cur = 0
 
         for i in range(num_stages):
@@ -335,12 +338,15 @@ class DIEFEN(nn.Module):
             block = nn.ModuleList([Block(
                 dim=embed_dims[i], mlp_ratio=mlp_ratios[i], drop=drop_rate, drop_path=dpr[cur + j])
                 for j in range(depths[i])])
+            # LayerNorm也是归一化的一种方法
             norm = norm_layer(embed_dims[i])
             cur += depths[i]
+            # setattr() 函数对应函数 getattr()，用于设置属性值，该属性不一定是存在的。
             setattr(self, f"patch_embed{i + 1}", patch_embed)
             setattr(self, f"block{i + 1}", block)
             setattr(self, f"norm{i + 1}", norm)
 
+        # classification head
         self.head = nn.Linear(
             embed_dims[3], num_classes) if num_classes > 0 else nn.Identity()
 
@@ -366,7 +372,7 @@ class DIEFEN(nn.Module):
         )
 
         self.fc = nn.Sequential(
-            nn.Linear(512*12, 256, bias=True),
+            nn.Linear(512*16, 256, bias=True),
             nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             nn.Linear(256, 2, bias=True),
@@ -419,6 +425,16 @@ class DIEFEN(nn.Module):
         features1 = self.forward_features(out_x1)
         features2 = self.forward_features(out_x2)
 
+        diff_features = [torch.abs(f1 - f2) for f1, f2 in zip(features1, features2)]
+        a1 = diff_features[0].mean(dim=1, keepdim=True).squeeze()
+        a2 = diff_features[1].mean(dim=1, keepdim=True).squeeze()
+        a3 = diff_features[2].squeeze()
+        a4 = diff_features[3].squeeze()
+        a1 = self.fc1(a1)
+        a2 = self.fc2(a2)
+        a3 = self.fc3(a3)
+
+
         multihead_attention = MultiHeadAttention(input_dim=64, num_heads=8).to(device)
         features1[0] = multihead_attention(abs(features1[0]-features2[0]),abs(features1[0]-features2[0]), features1[0]) + features1[0]
         features2[0] = multihead_attention(abs(features1[0]-features2[0]),abs(features1[0]-features2[0]), features2[0]) + features2[0]
@@ -435,7 +451,6 @@ class DIEFEN(nn.Module):
         features1[3] = multihead_attention(abs(features1[3]-features2[3]), abs(features1[3]-features2[3]), features1[3]) + features1[3]
         features2[3] = multihead_attention(abs(features1[3]-features2[3]), abs(features1[3]-features2[3]), features2[3]) + features2[3]
 
-        # 计算特征之间的差异并相加
         a10 = (features1[0] - features2[0]).mean(dim=1, keepdim=True).squeeze()
         a11 = features1[0].mean(dim=1, keepdim=True).squeeze()
         a12 = features2[0].mean(dim=1, keepdim=True).squeeze()
@@ -461,8 +476,9 @@ class DIEFEN(nn.Module):
         a41 = features1[3].squeeze()
         a42 = features2[3].squeeze()
 
-        sum_features = torch.cat((a10,a20,a30,a40,a11,a12,a21,a22,a31,a32,a41,a42), dim=1)
+        sum_features = torch.cat((a1,a2,a3,a4,a10,a20,a30,a40,a11,a12,a21,a22,a31,a32,a41,a42), dim=1)
 
+        # 处理总结特征并获得最终输出
         deep_out = self.fc(sum_features)
 
         final_out = self.softmax(deep_out)

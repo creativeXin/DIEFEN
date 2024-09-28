@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn as nn
 
@@ -7,7 +8,6 @@ from functools import partial
 from timm.models.layers import DropPath, to_2tuple
 from einops.layers.torch import Rearrange, Reduce
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # DWConv
 class DWConv(nn.Module):
@@ -115,8 +115,6 @@ class Block(nn.Module):
         return x
 
 class OverlapPatchEmbed(nn.Module):
-    """ Image to Patch Embedding """
-
     def __init__(self, img_size=(307, 241), patch_size=7, stride=4, in_chans=155, embed_dim=768):
         super().__init__()
         patch_size = to_2tuple(patch_size)
@@ -164,8 +162,9 @@ class ConvNet(nn.Module):
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.fc1 = nn.Linear(64 * 112 * 35, 128)
-        self.fc2 = nn.Linear(128, 2)
+        self.fc1 = nn.Linear(64 * 112 * 35, 128) 
+        self.fc2 = nn.Linear(128, 2) 
+
     def forward(self, x):
         x = self.conv1(x)
         x = F.relu(x)
@@ -263,7 +262,6 @@ class MultiHeadAttention(nn.Module):
         Q = self.wq(query).view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         K = self.wk(key).view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         V = self.wv(value).view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        # print(torch.matmul(Q, K.permute(0, 1, 3, 2)))
         energy = torch.matmul(Q, K.permute(0, 1, 3, 2)) / self.scale
 
         if mask is not None:
@@ -289,8 +287,10 @@ class SelfAttention(nn.Module):
         keys = self.keys(k)
         queries = self.queries(q)
         values = self.values(k)
+
         attention = torch.matmul(queries, keys.transpose(-2, -1)) / self.embed_size ** 0.5
         attention = F.softmax(attention, dim=-1)
+
         out = torch.matmul(attention, values)
         return out
 
@@ -313,23 +313,24 @@ class SpatialExchange(nn.Module):
         return out_x1, out_x2
 
 class DIEFEN(nn.Module):
-    def __init__(self, img_size=(5, 5), in_chans = 155, embed_dims=[64, 128, 256, 512],
+    def __init__(self, img_size=(450,140), in_chans=155, embed_dims=[64, 128, 256, 512],
                  mlp_ratios=[4, 4, 4, 4], drop_rate=0.1, drop_path_rate=0.1, norm_layer=nn.LayerNorm,
-                 depths=[1, 1, 1, 1], num_stages=4, num_classes=2):
-        super().__init__()
+                 depths=[1,1,1,1], num_stages=4, num_classes=2):
+        super().__init__(),
         self.num_classes = num_classes
         self.depths = depths
         self.num_stages = num_stages
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate,
+                                                sum(depths))]
         cur = 0
 
         for i in range(num_stages):
-            patch_embed = OverlapPatchEmbed(img_size=img_size if i == 0 else (img_size[0] // (2 ** (i + 1)), img_size[1] // (2 ** (i + 1))),
-
-                                            patch_size=7 if i == 0 else 3,
-                                            stride=4 if i == 0 else 2,
-                                            in_chans=in_chans if i == 0 else embed_dims[i - 1],
-                                            embed_dim=embed_dims[i])
+            patch_embed = OverlapPatchEmbed(
+                img_size=img_size if i == 0 else (img_size[0] // (2 ** (i + 1)), img_size[1] // (2 ** (i + 1))),
+                patch_size=7 if i == 0 else 3,
+                stride=4 if i == 0 else 2,
+                in_chans=in_chans if i == 0 else embed_dims[i - 1],
+                embed_dim=embed_dims[i])
 
             block = nn.ModuleList([Block(
                 dim=embed_dims[i], mlp_ratio=mlp_ratios[i], drop=drop_rate, drop_path=dpr[cur + j])
@@ -340,34 +341,38 @@ class DIEFEN(nn.Module):
             setattr(self, f"block{i + 1}", block)
             setattr(self, f"norm{i + 1}", norm)
 
-        self.head = nn.Linear(embed_dims[3], num_classes) if num_classes > 0 else nn.Identity()
+        self.head = nn.Linear(
+            embed_dims[3], num_classes) if num_classes > 0 else nn.Identity()
 
-        self.fc1 = self._make_fc_layer(64, 256, 512)
-        self.fc2 = self._make_fc_layer(128, 256, 512)
-        self.fc3 = self._make_fc_layer(256, 256, 512)
+        self.fc1 = nn.Sequential(
+            nn.Linear(64, 256, bias=True),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.Linear(256, 512, bias=True),
+        )
+
+        self.fc2 = nn.Sequential(
+            nn.Linear(128, 256, bias=True),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.Linear(256, 512, bias=True),
+        )
+
+        self.fc3 = nn.Sequential(
+            nn.Linear(256, 256, bias=True),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.Linear(256, 512, bias=True),
+        )
 
         self.fc = nn.Sequential(
-            nn.Linear(5632, 256, bias=True),
+            nn.Linear(512*12, 256, bias=True),
             nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             nn.Linear(256, 2, bias=True),
         )
         self.softmax = nn.Softmax(dim=-1)
 
-        self.multihead_attention_layers = nn.ModuleDict({
-            '64': MultiHeadAttention(input_dim=64, num_heads=8),
-            '128': MultiHeadAttention(input_dim=128, num_heads=8),
-            '256': MultiHeadAttention(input_dim=256, num_heads=8),
-            '512': MultiHeadAttention(input_dim=512, num_heads=8)
-        })
-
-    def _make_fc_layer(self, in_features, hidden_features, out_features):
-        return nn.Sequential(
-            nn.Linear(in_features, hidden_features, bias=True),
-            nn.BatchNorm1d(hidden_features),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_features, out_features, bias=True),
-        )
 
     def forward_features(self, x):
         B = x.shape[0]
@@ -409,42 +414,57 @@ class DIEFEN(nn.Module):
     def forward(self, image1, image2):
         spatial_exchange = SpatialExchange(p=0.5)
         channel_exchange = ChannelExchange(p=0.5)
-        out_x1, out_x2 = spatial_exchange(image1, image2)
+        out_x1,out_x2 = spatial_exchange(image1, image2)
         out_x1, out_x2 = channel_exchange(out_x1, out_x2)
         features1 = self.forward_features(out_x1)
         features2 = self.forward_features(out_x2)
 
-        diff_features = [torch.abs(f1 - f2) for f1, f2 in zip(features1, features2)]
-        a1 = self.fc1(diff_features[0].mean(dim=1, keepdim=True).squeeze())
-        a2 = self.fc2(diff_features[1].mean(dim=1, keepdim=True).squeeze())
-        a3 = self.fc3(diff_features[2].squeeze())
+        multihead_attention = MultiHeadAttention(input_dim=64, num_heads=8).to(device)
+        features1[0] = multihead_attention(abs(features1[0]-features2[0]),abs(features1[0]-features2[0]), features1[0]) + features1[0]
+        features2[0] = multihead_attention(abs(features1[0]-features2[0]),abs(features1[0]-features2[0]), features2[0]) + features2[0]
 
-        for idx, dim in enumerate([64, 128, 256, 512]):
-            layer_name = str(dim)
-            features1[idx] = self.multihead_attention_layers[layer_name](
-                torch.abs(features1[idx] - features2[idx]),
-                torch.abs(features1[idx] - features2[idx]),
-                features1[idx]
-            ) + features1[idx]
+        multihead_attention = MultiHeadAttention(input_dim=128, num_heads=8).to(device)
+        features1[1] = multihead_attention(abs(features1[1]-features2[1]), abs(features1[1]-features2[1]), features1[1]) + features1[1]
+        features2[1] = multihead_attention(abs(features1[1]-features2[1]),abs(features1[1]-features2[1]), features2[1]) + features2[1]
 
-            features2[idx] = self.multihead_attention_layers[layer_name](
-                torch.abs(features1[idx] - features2[idx]),
-                torch.abs(features1[idx] - features2[idx]),
-                features2[idx]
-            ) + features2[idx]
+        multihead_attention = MultiHeadAttention(input_dim=256, num_heads=8).to(device)
+        features1[2] = multihead_attention(abs(features1[2]-features2[2]), abs(features1[2]-features2[2]), features1[2]) + features1[2]
+        features2[2] = multihead_attention(abs(features1[2]-features2[2]), abs(features1[2]-features2[2]), features2[2]) + features2[2]
 
-        a11 = self.fc1(features1[0].mean(dim=1, keepdim=True).squeeze())
-        a12 = self.fc1(features2[0].mean(dim=1, keepdim=True).squeeze())
-        a21 = self.fc2(features1[1].mean(dim=1, keepdim=True).squeeze())
-        a22 = self.fc2(features2[1].mean(dim=1, keepdim=True).squeeze())
-        a31 = self.fc3(features1[2].squeeze())
-        a32 = self.fc3(features2[2].squeeze())
+        multihead_attention = MultiHeadAttention(input_dim=512, num_heads=8).to(device)
+        features1[3] = multihead_attention(abs(features1[3]-features2[3]), abs(features1[3]-features2[3]), features1[3]) + features1[3]
+        features2[3] = multihead_attention(abs(features1[3]-features2[3]), abs(features1[3]-features2[3]), features2[3]) + features2[3]
+
+        # 计算特征之间的差异并相加
+        a10 = (features1[0] - features2[0]).mean(dim=1, keepdim=True).squeeze()
+        a11 = features1[0].mean(dim=1, keepdim=True).squeeze()
+        a12 = features2[0].mean(dim=1, keepdim=True).squeeze()
+        a11 = self.fc1(a11)
+        a10 = self.fc1(a10)
+        a12 = self.fc1(a12)
+
+        a20 = (features1[1] - features2[1]).mean(dim=1, keepdim=True).squeeze()
+        a21 = features1[1].mean(dim=1, keepdim=True).squeeze()
+        a22 = features2[1].mean(dim=1, keepdim=True).squeeze()
+        a20 = self.fc2(a20)
+        a21 = self.fc2(a21)
+        a22 = self.fc2(a22)
+
+        a30 = (features1[2] - features2[2]).squeeze()
+        a31 = features1[2].squeeze()
+        a32 = features2[2].squeeze()
+        a30 = self.fc3(a30)
+        a31 = self.fc3(a31)
+        a32 = self.fc3(a32)
+
+        a40 = (features1[3] - features2[3]).squeeze()
         a41 = features1[3].squeeze()
         a42 = features2[3].squeeze()
 
-        sum_features = torch.cat((a11, a12, a21, a22, a31, a32, a41, a42, a1, a2, a3), dim=1)
+        sum_features = torch.cat((a10,a20,a30,a40,a11,a12,a21,a22,a31,a32,a41,a42), dim=1)
 
         deep_out = self.fc(sum_features)
+
         final_out = self.softmax(deep_out)
 
         return final_out

@@ -58,7 +58,6 @@ class AttentionModule(nn.Module):
         attn = self.conv1(attn)
         return u * attn
 
-# attention
 class SpatialAttention(nn.Module):
     def __init__(self, d_model):
         super().__init__()
@@ -80,16 +79,12 @@ class SpatialAttention(nn.Module):
 class Block(nn.Module):
     def __init__(self, dim, mlp_ratio=4., drop=0.1, drop_path=0.1, act_layer=nn.GELU):
         super().__init__()
-        # BN
         self.norm1 = nn.BatchNorm2d(dim)
-        # attention
         self.attn = SpatialAttention(dim)
         self.drop_path = DropPath(
             drop_path) if drop_path > 0. else nn.Identity()
-        # BN2
         self.norm2 = nn.BatchNorm2d(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        # FFN
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim,
                        act_layer=act_layer, drop=drop)
         layer_scale_init_value = 1e-2
@@ -108,8 +103,6 @@ class Block(nn.Module):
         return x
 
 class OverlapPatchEmbed(nn.Module):
-    """ Image to Patch Embedding """
-
     def __init__(self, img_size=(307, 241), patch_size=7, stride=4, in_chans=155, embed_dim=768):
         super().__init__()
         patch_size = to_2tuple(patch_size)
@@ -212,7 +205,6 @@ def MLPMixer(*, image_size, channels, patch_size, dim, depth, num_classes, expan
 
 
 class ChannelExchange(nn.Module):
-
     def __init__(self, p=1 / 2):
         super().__init__()
         assert p >= 0 and p <= 1
@@ -257,7 +249,6 @@ class MultiHeadAttention(nn.Module):
         Q = self.wq(query).view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         K = self.wk(key).view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         V = self.wv(value).view(batch_size, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        # print(torch.matmul(Q, K.permute(0, 1, 3, 2)))
         energy = torch.matmul(Q, K.permute(0, 1, 3, 2)) / self.scale
 
         if mask is not None:
@@ -283,6 +274,7 @@ class SelfAttention(nn.Module):
         keys = self.keys(k)
         queries = self.queries(q)
         values = self.values(k)
+
         attention = torch.matmul(queries, keys.transpose(-2, -1)) / self.embed_size ** 0.5
         attention = F.softmax(attention, dim=-1)
         out = torch.matmul(attention, values)
@@ -361,7 +353,7 @@ class DIEFEN(nn.Module):
         )
 
         self.fc = nn.Sequential(
-            nn.Linear(512*16, 256, bias=True),
+            nn.Linear(512*12, 256, bias=True),
             nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             nn.Linear(256, 2, bias=True),
@@ -440,33 +432,27 @@ class DIEFEN(nn.Module):
         features1[3] = multihead_attention(abs(features1[3]-features2[3]), abs(features1[3]-features2[3]), features1[3]) + features1[3]
         features2[3] = multihead_attention(abs(features1[3]-features2[3]), abs(features1[3]-features2[3]), features2[3]) + features2[3]
 
-        a10 = (features1[0] - features2[0]).mean(dim=1, keepdim=True).squeeze()
         a11 = features1[0].mean(dim=1, keepdim=True).squeeze()
         a12 = features2[0].mean(dim=1, keepdim=True).squeeze()
         a11 = self.fc1(a11)
-        a10 = self.fc1(a10)
         a12 = self.fc1(a12)
 
-        a20 = (features1[1] - features2[1]).mean(dim=1, keepdim=True).squeeze()
         a21 = features1[1].mean(dim=1, keepdim=True).squeeze()
         a22 = features2[1].mean(dim=1, keepdim=True).squeeze()
-        a20 = self.fc2(a20)
         a21 = self.fc2(a21)
         a22 = self.fc2(a22)
 
-        a30 = (features1[2] - features2[2]).squeeze()
         a31 = features1[2].squeeze()
         a32 = features2[2].squeeze()
-        a30 = self.fc3(a30)
+
         a31 = self.fc3(a31)
         a32 = self.fc3(a32)
 
-        a40 = (features1[3] - features2[3]).squeeze()
         a41 = features1[3].squeeze()
         a42 = features2[3].squeeze()
 
-        sum_features = torch.cat((a1,a2,a3,a4,a10,a20,a30,a40,a11,a12,a21,a22,a31,a32,a41,a42), dim=1)
-        
+        sum_features = torch.cat((a1,a2,a3,a4,a11,a12,a21,a22,a31,a32,a41,a42), dim=1)
+
         deep_out = self.fc(sum_features)
 
         final_out = self.softmax(deep_out)
